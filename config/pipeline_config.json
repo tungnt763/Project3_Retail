@@ -7,8 +7,7 @@
         "staging_dataset": "edw_stg",
         "dw_dataset": "edw"
     },
-    "dim_table": [
-        {
+    "dim_table": [{
             "table_name": "categories",
             "schedule_interval": null,
             "dim_type": "scd1",

@@ -39,11 +39,11 @@ def create_dag(_dag_id, _schedule, **kwargs):
 
 config_path = os.path.join(HOME, 'config', 'pipeline_config.json')
 
-with open(config_path, 'r') as f:
-    config_content = f.read()
+with open(config_path, 'r') as inp:
+    config_content = inp.read()
     print('Config_content: ', config_content)
-    pipelines = json.load(config_content)['dim_table']
-    db_env = json.load(config_content)['db_enviroment']
+    pipelines = json.loads(config_content)['dim_table']
+    db_env = json.loads(config_content)['db_enviroment']
 
 _db_conn = f"postgresql://{db_env['db_user']}:{db_env['db_pwd']}@airflow/{db_env['project']}"
 
