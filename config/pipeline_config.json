@@ -1,0 +1,64 @@
+{
+    "db_enviroment": {
+        "db_user": "airflow",
+        "db_pwd": "airflow",
+        "project": "airflow",
+        "landing_dataset": "edw_ld",
+        "staging_dataset": "edw_stg",
+        "dw_dataset": "edw"
+    },
+    "dim_table": [
+        {
+            "table_name": "categories",
+            "schedule_interval": null,
+            "dim_type": "scd1",
+            "columns_nk": ["category_id"],
+            "columns_detail": {
+                "category_id": "INT",
+                "category_department_id": "INT",
+                "category_name": "VARCHAR"
+            }
+        },
+        {
+            "table_name": "departments",
+            "schedule_interval": null,
+            "dim_type": "scd1",
+            "columns_nk": ["department_id"],
+            "columns_detail": {
+                "department_id": "INT",
+                "department_name": "VARCHAR"
+            }
+        },
+        {
+            "table_name": "customers",
+            "schedule_interval": null,
+            "dim_type": "scd2",
+            "columns_nk": ["customer_id"],
+            "columns_detail": {
+                "customer_id": "INT",
+                "customer_fname": "VARCHAR",
+                "customer_lname": "VARCHAR",
+                "customer_email": "VARCHAR",
+                "customer_password": "VARCHAR",
+                "customer_street": "VARCHAR",
+                "customer_city": "VARCHAR",
+                "customer_state": "VARCHAR",
+                "customer_zipcode": "VARCHAR"
+            }
+        },
+        {
+            "table_name": "products",
+            "schedule_interval": null,
+            "dim_type": "scd2",
+            "columns_nk": ["product_id"],
+            "columns_detail": {
+                "product_id": "INT",
+                "product_category_id": "INT",
+                "product_name": "VARCHAR",
+                "product_description": "VARCHAR",
+                "product_price": "FLOAT",
+                "product_image": "VARCHAR"
+            }
+        }
+    ]
+}
