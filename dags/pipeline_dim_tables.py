@@ -5,13 +5,15 @@ TEMPLATE_ROOT_PATH = os.path.join(HOME, 'dags', 'resources', 'sql_template')
 sys.path.append(HOME)
 
 import json
-from datetime import datetime, timedelta
 from airflow.decorators import dag, task
-from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from datetime import datetime, timedelta
+from airflow.providers.google.cloud.transfers.gcs_to_gcs import GCSToGCSOperator
 from dags.resources.business.dim.l1_dim_landing import landing_layer
-
-
+from dags.resources.business.dim.l2_dim_staging import staging_layer
+from dags.resources.business.dim.l3_dim_edw import edw_layer
+from lib.utils import get_rundate as _get_rundate
+from airflow.providers.google.cloud.sensors.gcs import GCSObjectsWithPrefixExistenceSensor
+from airflow.providers.google.cloud.hooks.gcs import GCSHook
 _default_args = {
     'owner': 'tungnt',
     'depends_on_past': False,
@@ -29,47 +31,56 @@ def create_dag(_dag_id, _schedule, **kwargs):
         dag_id=_dag_id,
         default_args=_default_args,
         schedule=_schedule,
-        tags=['dim_pipelines', kwargs.get('table_name')],
+        tags=[kwargs.get('table_name')],
         catchup=False
     )
     def get_dag():
 
-        _bucket_name = kwargs.get('bucket_name')
-        _bucket_key = kwargs.get('bucket_key')
-        _archive_bucket = kwargs.get('archive_bucket')
-        _archive_key = kwargs.get('archive_key')
+        @task(provide_context=True) 
+        def get_rundate(**context):
+            run_dt = _get_rundate()
+            print(f">> Rundate: {run_dt}")
+            context['ti'].xcom_push(key="rundate", value=run_dt)
 
-        minio_sensor = S3KeySensor(
-            task_id='minio_key_sensor',
-            bucket_name=_bucket_name,
-            bucket_key=_bucket_key,
-            aws_conn_id='aws_default',
-            poke_interval=60,
-            timeout=600
+        sensor_task = GCSObjectsWithPrefixExistenceSensor(
+            task_id=f'sensor_{kwargs.get("table_name")}_file',
+            bucket=kwargs.get('bucket_name'),
+            prefix=kwargs.get('prefix_name'), 
+            google_cloud_conn_id=kwargs.get('gcp_conn_id'),
+            timeout=600, 
+            poke_interval=30,  
         )
 
+        @task(task_id=f'get_{kwargs.get("table_name")}_file_name')
+        def get_file_name(bucket_name, prefix):
+            hook = GCSHook(gcp_conn_id=kwargs.get('gcp_conn_id'))
+
+            blobs = hook.list(bucket_name, prefix=prefix)
+
+            if blobs:
+                return blobs[0]  
+            return None
+        
+        return_value = get_file_name(kwargs.get('bucket_name'), kwargs.get('prefix_name'))
+
         ld_layer = landing_layer(**kwargs)
+        
+        stg_layer = staging_layer(**kwargs)
 
-        @task(task_id="archive_file")
-        def archive_file():
-            s3_hook = S3Hook(aws_conn_id='aws_default')
-            
-            # Ensure archive bucket exists
-            if not s3_hook.check_for_bucket(_archive_bucket):
-                s3_hook.create_bucket(bucket_name=_archive_bucket)
-            
-            # Copy file to archive bucket
-            s3_hook.copy_object(
-                source_bucket_key=_bucket_key,
-                dest_bucket_key=_archive_key,
-                source_bucket_name=_bucket_name,
-                dest_bucket_name=_archive_bucket
-            )
-            
-            # Delete the original file in the raw bucket
-            s3_hook.delete_objects(bucket=_bucket_name, keys=_bucket_key)
+        dw_layer = edw_layer(**kwargs)
 
-        minio_sensor >> ld_layer >> archive_file()
+        table_name = kwargs.get("table_name")
+        archive_file = GCSToGCSOperator(
+            task_id=f'archive_{table_name}_file',
+            source_bucket=kwargs.get('bucket_name'),
+            source_object="{{ task_instance.xcom_pull(task_ids='get_" + kwargs.get('table_name') + "_file_name', key='return_value') }}",
+            destination_bucket=kwargs.get('bucket_name'),
+            destination_object="archive/{{ task_instance.xcom_pull(task_ids='get_" + kwargs.get('table_name') + "_file_name', key='return_value').split('/')[-1].split('.')[0] }}_{{ ts_nodash }}.csv",
+            move_object=True,
+            gcp_conn_id=kwargs.get('gcp_conn_id'),
+        )
+
+        get_rundate() >> sensor_task >> return_value >> ld_layer >> stg_layer >> dw_layer >> archive_file
 
     return get_dag()
 
@@ -79,14 +90,13 @@ with open(config_path, 'r') as inp:
     config_content = inp.read()
     print('Config_content: ', config_content)
     pipelines = json.loads(config_content)['dim_table']
-    db_env = json.loads(config_content)['db_enviroment']
-
-_db_conn = f"postgresql://{db_env['db_user']}:{db_env['db_pwd']}@airflow/{db_env['project']}"
+    db_env = json.loads(config_content)['db_environment']
 
 _project = db_env.get('project')
 _landing_dataset = db_env.get('landing_dataset')
 _staging_dataset = db_env.get('staging_dataset')
 _dw_dataset = db_env.get('dw_dataset')
+_bucket_name = db_env.get('bucket_name')
 
 for pipeline in pipelines:
     _table_name = pipeline.get('table_name')
@@ -97,28 +107,20 @@ for pipeline in pipelines:
     _columns_detail = pipeline.get('columns_detail')
     _columns_nk = pipeline.get('columns_nk')
 
-    _bucket_name = 'raw'
-    _bucket_key = f'{_table_name}/{_table_name}.csv'
-    _archive_bucket = 'archive'
-    _archive_key = f'{_table_name}/{_table_name}_{datetime.now().strftime("%Y%m%d")}.csv'
-
     cmn_config = {
-        "db_conn": _db_conn,
+        "gcp_conn_id": 'gcp',
         "project": _project,
         "landing_dataset": _landing_dataset,
         "staging_dataset": _staging_dataset,
         "dw_dataset": _dw_dataset,
+        "bucket_name": _bucket_name,
+        "prefix_name": f'raw/{_table_name}',
 
         "template_root_path": os.path.join(TEMPLATE_ROOT_PATH),
         "table_name": _table_name,
         "dim_type": _dim_type,
         "columns_nk": _columns_nk,
-        "columns_detail": _columns_detail,
-
-        "bucket_name": _bucket_name,
-        "bucket_key": _bucket_key,
-        "archive_bucket": _archive_bucket,
-        "archive_key": _archive_key
+        "columns_detail": _columns_detail
     }
 
     globals()[_dag_id] = create_dag(_dag_id, _schedule_interval, **cmn_config)

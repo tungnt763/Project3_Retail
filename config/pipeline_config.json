@@ -1,11 +1,12 @@
 {
-    "db_enviroment": {
+    "db_environment": {
         "db_user": "airflow",
         "db_pwd": "airflow",
-        "project": "airflow",
+        "project": "festive-ellipse-441310-b5",
         "landing_dataset": "edw_ld",
         "staging_dataset": "edw_stg",
-        "dw_dataset": "edw"
+        "dw_dataset": "edw",
+        "bucket_name": "retails_data"
     },
     "dim_table": [{
             "table_name": "categories",
@@ -13,9 +14,9 @@
             "dim_type": "scd1",
             "columns_nk": ["category_id"],
             "columns_detail": {
-                "category_id": "INT",
-                "category_department_id": "INT",
-                "category_name": "VARCHAR"
+                "category_id": "INT64",
+                "category_department_id": "INT64",
+                "category_name": "STRING"
             }
         },
         {
@@ -24,8 +25,8 @@
             "dim_type": "scd1",
             "columns_nk": ["department_id"],
             "columns_detail": {
-                "department_id": "INT",
-                "department_name": "VARCHAR"
+                "department_id": "INT64",
+                "department_name": "STRING"
             }
         },
         {
@@ -34,15 +35,15 @@
             "dim_type": "scd2",
             "columns_nk": ["customer_id"],
             "columns_detail": {
-                "customer_id": "INT",
-                "customer_fname": "VARCHAR",
-                "customer_lname": "VARCHAR",
-                "customer_email": "VARCHAR",
-                "customer_password": "VARCHAR",
-                "customer_street": "VARCHAR",
-                "customer_city": "VARCHAR",
-                "customer_state": "VARCHAR",
-                "customer_zipcode": "VARCHAR"
+                "customer_id": "INT64",
+                "customer_fname": "STRING",
+                "customer_lname": "STRING",
+                "customer_email": "STRING",
+                "customer_password": "STRING",
+                "customer_street": "STRING",
+                "customer_city": "STRING",
+                "customer_state": "STRING",
+                "customer_zipcode": "STRING"
             }
         },
         {
@@ -51,12 +52,35 @@
             "dim_type": "scd2",
             "columns_nk": ["product_id"],
             "columns_detail": {
-                "product_id": "INT",
-                "product_category_id": "INT",
-                "product_name": "VARCHAR",
-                "product_description": "VARCHAR",
-                "product_price": "FLOAT",
-                "product_image": "VARCHAR"
+                "product_id": "INT64",
+                "product_category_id": "INT64",
+                "product_name": "STRING",
+                "product_description": "STRING",
+                "product_price": "FLOAT64",
+                "product_image": "STRING"
+            }
+        }
+    ],
+    "fact_table": [{
+            "table_name": "orders",
+            "schedule_interval": null,
+            "columns_detail": {
+                "order_id": "INT64",
+                "order_date": "TIMESTAMP",
+                "order_customer_id": "INT64",
+                "order_status": "STRING"
+            }
+        },
+        {
+            "table_name": "order_items",
+            "schedule_interval": null,
+            "columns_detail": {
+                "order_item_id": "INT64",
+                "order_item_order_id": "INT64",
+                "order_item_product_id": "INT64",
+                "order_item_quantity": "INT64",
+                "order_item_subtotal": "FLOAT64",
+                "order_item_product_price": "FLOAT64"
             }
         }
     ]

@@ -1,66 +1,98 @@
 import os
-import csv
-import io
+import sys
+HOME = os.getenv('AIRFLOW_HOME')
+sys.path.append(HOME)
+
+import json
 from airflow.decorators import task, task_group
-from airflow.providers.postgres.operators.postgres import PostgresOperator
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
-from psycopg2.extras import execute_values
 from datetime import datetime
+from lib.job_control import get_max_timestamp as _get_max_timestamp
+from lib.job_control import insert_log 
+from airflow.providers.google.cloud.transfers.gcs_to_bigquery import GCSToBigQueryOperator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+
+HOME = os.getenv('AIRFLOW_HOME')
+TEMPLATE_ROOT_PATH =  os.path.join(HOME, 'dags', 'resources', 'sql_template')
+config_path = os.path.join(HOME, 'config', 'pipeline_config.json')
 
 @task_group(group_id="landing_layer")
 def landing_layer(**kwargs):
+    _bucket_name = kwargs.get("bucket_name")
+    _my_project = kwargs.get("project")
+    _my_dataset = kwargs.get("landing_dataset")
+    _my_table_name = f'dim_{kwargs.get("table_name")}_ld'   
+    _temp_table = f'dim_{kwargs.get("table_name")}_ld_temp'
 
-    _my_table_name = f'dim_{kwargs.get("table_name")}_ld'
-    _my_dataset = kwargs.get('landing_dataset')
-
-    # Define the S3 path for the CSV file
-    _bucket_name = kwargs.get('bucket_name')
-    _bucket_key = kwargs.get('bucket_key')
-
-    _sql_template = os.path.join(kwargs.get('template_root_path'), '1_landing', 'dim_tables_cmn_ld.sql')
-    _columns = list(kwargs.get('columns_detail').keys())
-
+    _columns = kwargs.get("columns_detail")
+    _gcp_conn_id = kwargs.get("gcp_conn_id")
+    _sql_template = os.path.join('resources', 'sql_template', '1_landing', 'dim_tables_cmn_ld.sql')
+    
     _prms_schema_columns = []
+    _schema_columns = []
     for col in _columns:
-        _prms_schema_columns.append(f'{col} VARCHAR')
+        _prms_schema_columns.append(f'{col} STRING')
+        _schema_columns.append({'name': f'{col}', 'type': 'STRING'})
 
-    @task(task_id=f'create_{_my_table_name}')
-    def create_table():
-        
-        s3_hook = S3Hook(aws_conn_id='aws_default')
-        postgres_hook = PostgresHook(postgres_conn_id='postgres')
-
-        # Get the file content from MinIO (S3)
-        file_obj = s3_hook.get_key(key=_bucket_key, bucket_name=_bucket_name)
-        file_content = file_obj.get()['Body'].read().decode('utf-8')
-        
-        # Read the CSV data
-        _csv_data = csv.reader(io.StringIO(file_content))
-        
-        with open(_sql_template, 'r') as f:
-            _sql_query_template = f.read()
-        
-        _sql_query = _sql_query_template.format(
-            my_dataset=_my_dataset,
-            my_table_name=_my_table_name,
-            schema_columns=',\n\t'.join(_prms_schema_columns),
-            columns=', '.join(_columns)       
+    @task(provide_context=True)
+    def get_max_timestamp(**context):
+        max_timestamp = _get_max_timestamp(
+            gcp_conn_id=_gcp_conn_id,
+            dataset_name=_my_dataset,
+            table_name=_my_table_name
         )
 
-        print("Sql: ", _sql_query)
+        if max_timestamp:
+            context['ti'].xcom_push(key='max_timestamp', value=max_timestamp)
+            print(f">> {_my_table_name}'s max timestamp: {max_timestamp}")
+        else:
+            raise Exception("GET max timestamp failed, marking task as failed.")
 
-        truncate_sql = f"""
-        TRUNCATE TABLE {_my_dataset}.{_my_table_name};
-        """
+    move_to_landing_temp = GCSToBigQueryOperator(
+        task_id='move_to_landing_temp',
+        bucket=_bucket_name,
+        source_objects=["{{ task_instance.xcom_pull(task_ids='get_" + kwargs.get('table_name') + "_file_name', key='return_value') }}"],
+        destination_project_dataset_table=f"{_my_project}.{_my_dataset}.{_temp_table}",
+        schema_fields=_schema_columns,
+        source_format='CSV',
+        write_disposition='WRITE_TRUNCATE', 
+        create_disposition='CREATE_IF_NEEDED',
+        gcp_conn_id=_gcp_conn_id
+    )
 
-        # Prepare the PostgreSQL connection
-        with postgres_hook.get_conn() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(truncate_sql)
-                execute_values(cursor, _sql_query, _csv_data)
-                conn.commit()
+    process = BigQueryInsertJobOperator(
+        task_id=f'create_{_my_table_name}',
+        configuration={
+            "query": {
+                "query": "{% include '" + _sql_template + "' %}",
+                "useLegacySql": False,
+            }
+        },
+        params={
+            'source_table': _temp_table,
+            'my_project': _my_project,
+            'my_dataset': _my_dataset,
+            'my_table_name': _my_table_name,
+            'schema_columns': ',\n\t'.join(_prms_schema_columns),
+        },
+        location='US', 
+        gcp_conn_id=_gcp_conn_id
+    )
+
+    @task(provide_context=True)
+    def update_job_control(**context):
+        log = insert_log(
+            gcp_conn_id=_gcp_conn_id,
+            dataset_name=_my_dataset,
+            table_name=_my_table_name,
+            max_timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+            rundate=int(context['ti'].xcom_pull(task_ids='get_rundate', key='rundate'))
+        )
+
+        if log:
+            print(f">> Job control updated: {log}")
+        else:
+            raise Exception("Log insertion failed, marking task as failed.")
         
-    create_table()
+    get_max_timestamp() >> move_to_landing_temp >> process >> update_job_control()
+
     

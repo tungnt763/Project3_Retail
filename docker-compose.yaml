@@ -53,6 +53,7 @@ x-airflow-common: &airflow-common
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
     - ./lib:/opt/airflow/lib
+    - ./include:/opt/airflow/include
   user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
   depends_on:
     postgres:
@@ -105,26 +106,6 @@ services:
   ## MINIO
   ##########################################################
 
-  s3_minio:
-    image: minio/minio:latest
-    ports:
-      - "9000:9000"
-      - "9090:9090"
-    volumes:
-      - minio_storage:/data
-    environment:
-      MINIO_ACCESS_KEY: minio_admin
-      MINIO_SECRET_KEY: minio_password
-    command: server /data --console-address ":9090"
-    restart: always
-
-  s3_minio_buckets:
-    image: minio/mc
-    depends_on:
-      - s3_minio
-    entrypoint: >
-      /bin/sh -c " /usr/bin/mc config host add s3_minio http://host.docker.internal:9000 minio_admin minio_password; /usr/bin/mc rm -r --force s3_minio/raw; /usr/bin/mc mb s3_minio/raw; /usr/bin/mc rm -r --force s3_minio/dbt; /usr/bin/mc mb s3_minio/dbt; exit 0; "
-
 volumes:
   postgres-db-volume:
-  minio_storage:
+  # minio_storage:
